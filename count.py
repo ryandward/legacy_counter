@@ -1,12 +1,15 @@
 from multiprocessing import Pool, cpu_count
 from collections import Counter
-from Bio import SeqIO
 from Bio.Seq import Seq
+from Bio import SeqIO
 from rich.console import Console
 from rich.table import Table
 from argparse import ArgumentParser
+from itertools import islice
 import sys
 import gzip
+import zlib
+
 
 def read_fasta(fasta_file: str) -> dict:
     barcodes = {}
@@ -17,9 +20,22 @@ def read_fasta(fasta_file: str) -> dict:
         barcodes[length].add(str(record.seq))
     return barcodes
 
-def read_fastq(fastq_file: str) -> list:
-    with gzip.open(fastq_file, 'rt') if fastq_file.endswith('.gz') else open(fastq_file, 'r') as f:
-        return [str(record.seq) for record in SeqIO.parse(f, "fastq")]
+def read_paired_fastq(fastq1_file: str, fastq2_file: str, chunk_size: int = 40000):
+    paired_reads1 = []
+    paired_reads2 = []
+    with gzip.open(fastq1_file, 'rt') if fastq1_file.endswith('.gz') else open(fastq1_file, 'r') as f1, \
+         gzip.open(fastq2_file, 'rt') if fastq2_file.endswith('.gz') else open(fastq2_file, 'r') as f2:
+             
+        while True:
+            chunk1 = list(islice(f1, chunk_size))
+            chunk2 = list(islice(f2, chunk_size))
+            if not chunk1 or not chunk2:
+                break
+            
+            paired_reads1.extend(chunk1[i+1].strip() for i in range(0, len(chunk1), 4))
+            paired_reads2.extend(chunk2[i+1].strip() for i in range(0, len(chunk2), 4))
+    
+    return paired_reads1, paired_reads2
 
 def process_chunk(args: tuple) -> Counter:
     chunk, barcodes_by_length = args
@@ -40,18 +56,17 @@ if __name__ == "__main__":
     parser.add_argument('fastq2', type=str, help='Second fastq file.')
     args = parser.parse_args()
 
-    try:
-        barcodes = read_fasta(args.fasta_file)
-        reads1 = read_fastq(args.fastq1)
-        reads2 = read_fastq(args.fastq2)
-    except FileNotFoundError:
-        print("File not found.")
-        sys.exit(1)
-
     # Initialize Rich console
     console = Console(stderr=True, highlight=False)
+    console.rule("[bold red]Starting the program...")
 
-    # Create a table
+    try:
+        barcodes = read_fasta(args.fasta_file)
+    except FileNotFoundError:
+        console.print("File not found.")
+        sys.exit(1)
+
+    # Create a table for k-mer summary
     table = Table(show_header=True, header_style="bold green")
     table.add_column("K-mer Length", style="dim", width=12)
     table.add_column("Number of K-mers", style="dim", width=18)
@@ -61,7 +76,11 @@ if __name__ == "__main__":
 
     console.rule("[bold red]K-mer Summary")
     console.print(table)
-    console.rule("[bold red]")
+
+    # Read paired fastq files in chunks
+    console.rule("[bold red]Reading fastq files in chunks...")
+    chunk_size = 40000  # 10,000 reads x 4 lines per read
+    reads1, reads2 = read_paired_fastq(args.fastq1, args.fastq2, chunk_size)
 
     all_reads = list(zip(reads1, reads2))
 
@@ -77,5 +96,6 @@ if __name__ == "__main__":
     for res in results:
         final_counts.update(res)
 
+    console.rule("[bold red]Final Barcode Counts")
     for barcode, count in final_counts.items():
         print(f"{barcode}\t{count}")
