@@ -8,18 +8,17 @@ import gzip
 
 console = Console(stderr=True, highlight=False)
 
-def read_fasta(fasta_file: str) -> dict:
-    """Read barcodes from a FASTA file and also generate their reverse complements."""
-    barcode_pairs = {}
+def read_fasta(fasta_file: str) -> set:
+    """Read barcodes from a FASTA file."""
+    barcodes = set()
     open_func = gzip.open if fasta_file.endswith('.gz') else open
     with open_func(fasta_file, 'rt') as f:
         for line in f:
             if line.startswith(">"):
                 continue
             seq = line.strip()
-            seq_rc = str(Seq(seq).reverse_complement())
-            barcode_pairs[seq] = seq_rc
-    return barcode_pairs
+            barcodes.add(seq)
+    return barcodes
 
 def fastq_reader(file):
     """Generator function to read records from a FASTQ file."""
@@ -32,7 +31,7 @@ def fastq_reader(file):
             break
         yield seq_line.strip()
 
-def read_paired_fastq(fastq1_file: str, fastq2_file: str, num_threads: int, barcode_pairs: dict):
+def read_paired_fastq(fastq1_file: str, fastq2_file: str, num_threads: int):
     """Read paired-end sequences from two FASTQ files and chunk them for parallel processing."""
     paired_reads1, paired_reads2 = [], []
     
@@ -45,34 +44,41 @@ def read_paired_fastq(fastq1_file: str, fastq2_file: str, num_threads: int, barc
     
     chunk_size = len(paired_reads1) // num_threads
     return [
-        (paired_reads1[i:i+chunk_size], paired_reads2[i:i+chunk_size], barcode_pairs)
+        (paired_reads1[i:i+chunk_size], paired_reads2[i:i+chunk_size], barcodes)
         for i in range(0, len(paired_reads1), chunk_size)
     ]
 
-
 def process_chunk(chunk: tuple) -> Counter:
-    reads1, reads2, barcode_pairs = chunk
+    """Process a chunk of paired-end reads to count barcode occurrences."""
+    reads1, reads2, barcodes = chunk
     counts = Counter()
-    barcode_length = len(next(iter(barcode_pairs.keys())))
-    cache = {}
+    barcode_length = len(next(iter(barcodes)))
     
+    cache = {}  # Cache for storing counts of previously seen read pairs
+
     for rec1, rec2 in zip(reads1, reads2):
         rec_pair = (rec1, rec2)
+        
         if rec_pair in cache:
             counts.update(cache[rec_pair])
             continue
+
+        # Reverse complement the second read
+        rec2_rev_comp = str(Seq(rec2).reverse_complement())
         
+        # Generate k-mers from the reads
         kmer_set1 = {rec1[i:i + barcode_length] for i in range(len(rec1) - barcode_length + 1)}
-        kmer_set2 = {rec2[i:i + barcode_length] for i in range(len(rec2) - barcode_length + 1)}
+        kmer_set2 = {rec2_rev_comp[i:i + barcode_length] for i in range(len(rec2_rev_comp) - barcode_length + 1)}
         
-        intersect_kmers = set()
-        for kmer1 in kmer_set1:
-            kmer2 = barcode_pairs.get(kmer1, None)
-            if kmer2 and kmer2 in kmer_set2:
-                intersect_kmers.add(kmer1)
+        # Early termination if no intersection with barcodes
+        if not (kmer_set1 & barcodes) or not (kmer_set2 & barcodes):
+            continue
         
+        intersect_kmers = kmer_set1 & kmer_set2 & barcodes
         cache[rec_pair] = intersect_kmers
-        counts.update(intersect_kmers)
+
+        for kmer in intersect_kmers:
+            counts[kmer] += 1
 
     return counts
 
@@ -91,14 +97,13 @@ if __name__ == "__main__":
     # Time and run the main steps
     with console.status("[bold green]Reading FASTA File..."):
         start_time = time.time()
-        barcode_pairs = read_fasta(args.fasta_file)
+        barcodes = read_fasta(args.fasta_file)
         console.print(f"Time Taken to Read FASTA File: {time.time() - start_time} Seconds")
 
     with console.status("[bold green]Reading FASTQ Files..."):
         start_time = time.time()
-        chunks = read_paired_fastq(args.fastq1, args.fastq2, num_threads, barcode_pairs)
+        chunks = read_paired_fastq(args.fastq1, args.fastq2, num_threads)
         console.print(f"Time Taken to Read FASTQ Files: {time.time() - start_time} Seconds")
-
 
     with console.status("[bold green]Processing Chunks..."):
         start_time = time.time()
