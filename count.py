@@ -1,96 +1,92 @@
 from multiprocessing import Pool, cpu_count
 from collections import Counter
 from Bio.Seq import Seq
-from Bio import SeqIO
 from rich.console import Console
-from rich.table import Table
 from argparse import ArgumentParser
-from itertools import islice
-import sys
+import time
 import gzip
-import zlib
-
 
 def read_fasta(fasta_file: str) -> dict:
-    barcodes = {}
-    for record in SeqIO.parse(fasta_file, "fasta"):
-        length = len(record.seq)
-        if length not in barcodes:
-            barcodes[length] = set()
-        barcodes[length].add(str(record.seq))
+    with console.status("[bold green]Reading FASTA File..."):
+        barcodes = {}
+        open_func = gzip.open if fasta_file.endswith('.gz') else open
+        with open_func(fasta_file, 'rt') as f:
+            for line in f:
+                if line.startswith(">"):
+                    continue
+                seq = line.strip()
+                length = len(seq)
+                if length not in barcodes:
+                    barcodes[length] = set()
+                barcodes[length].add(seq)
     return barcodes
 
-def read_paired_fastq(fastq1_file: str, fastq2_file: str, chunk_size: int = 40000):
-    paired_reads1 = []
-    paired_reads2 = []
-    with gzip.open(fastq1_file, 'rt') if fastq1_file.endswith('.gz') else open(fastq1_file, 'r') as f1, \
-         gzip.open(fastq2_file, 'rt') if fastq2_file.endswith('.gz') else open(fastq2_file, 'r') as f2:
-             
-        while True:
-            chunk1 = list(islice(f1, chunk_size))
-            chunk2 = list(islice(f2, chunk_size))
-            if not chunk1 or not chunk2:
-                break
-            
-            paired_reads1.extend(chunk1[i+1].strip() for i in range(0, len(chunk1), 4))
-            paired_reads2.extend(chunk2[i+1].strip() for i in range(0, len(chunk2), 4))
-    
-    return paired_reads1, paired_reads2
+def read_paired_fastq(fastq1_file: str, fastq2_file: str, num_threads: int):
+    with console.status("[bold green]Reading FASTQ Files..."):
+        paired_reads1 = []
+        paired_reads2 = []
+        
+        open_func = gzip.open if fastq1_file.endswith('.gz') else open
+        with open_func(fastq1_file, 'rt') as f1, open_func(fastq2_file, 'rt') as f2:
+            while True:
+                next(f1, None)  # Skip header
+                next(f2, None)
+                seq1_line = next(f1, None)
+                seq2_line = next(f2, None)
+                next(f1, None)  # Skip strand
+                next(f2, None)
+                next(f1, None)  # Skip quality
+                next(f2, None)
+                
+                if seq1_line is None or seq2_line is None:
+                    break
+                
+                paired_reads1.append(seq1_line.strip())
+                paired_reads2.append(seq2_line.strip())
 
-def process_chunk(args: tuple) -> Counter:
-    chunk, barcodes_by_length = args
-    counts = Counter()
-    for rec1, rec2 in chunk:
-        rec2_rev_comp = str(Seq(rec2).reverse_complement())
-        for barcode_length in barcodes_by_length.keys():
-            read_kmers_1 = {rec1[i:i + barcode_length] for i in range(len(rec1) - barcode_length + 1)}
-            read_kmers_2 = {rec2_rev_comp[i:i + barcode_length] for i in range(len(rec2_rev_comp) - barcode_length + 1)}
-            intersection = read_kmers_1 & read_kmers_2 & barcodes_by_length[barcode_length]
-            counts.update(intersection)
+        chunk_size = len(paired_reads1) // num_threads
+    return [(paired_reads1[i:i+chunk_size], paired_reads2[i:i+chunk_size], barcodes) for i in range(0, len(paired_reads1), chunk_size)]
+
+def process_chunk(chunk: tuple) -> Counter:
+    with console.status("[bold green]Processing Chunks..."):
+        reads1, reads2, barcodes = chunk
+        counts = Counter()
+        for rec1, rec2 in zip(reads1, reads2):
+            rec2_rev_comp = str(Seq(rec2).reverse_complement())
+            for barcode_length in barcodes.keys():
+                read_kmers_1 = {rec1[i:i + barcode_length] for i in range(len(rec1) - barcode_length + 1)}
+                read_kmers_2 = {rec2_rev_comp[i:i + barcode_length] for i in range(len(rec2_rev_comp) - barcode_length + 1)}
+                intersection = read_kmers_1 & read_kmers_2 & barcodes[barcode_length]
+                counts.update(intersection)
     return counts
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description='Process some barcodes.')
-    parser.add_argument('fasta_file', type=str, help='Input fasta file.')
-    parser.add_argument('fastq1', type=str, help='First fastq file.')
-    parser.add_argument('fastq2', type=str, help='Second fastq file.')
+    parser = ArgumentParser(description='Process Barcodes.')
+    parser.add_argument('fasta_file', type=str, help='Input FASTA file. Can be gzipped.')
+    parser.add_argument('fastq1', type=str, help='First FASTQ file. Can be gzipped.')
+    parser.add_argument('fastq2', type=str, help='Second FASTQ file. Can be gzipped.')
     args = parser.parse_args()
 
-    # Initialize Rich console
     console = Console(stderr=True, highlight=False)
-    console.rule("[bold red]Starting the program...")
+    console.rule("[bold red]Starting the Program")
 
-    try:
-        barcodes = read_fasta(args.fasta_file)
-    except FileNotFoundError:
-        console.print("File not found.")
-        sys.exit(1)
+    start_time = time.time()
+    barcodes = read_fasta(args.fasta_file)
+    end_time = time.time()
+    console.print(f"Time Taken to Read FASTA File: {end_time - start_time} Seconds")
 
-    # Create a table for k-mer summary
-    table = Table(show_header=True, header_style="bold green")
-    table.add_column("K-mer Length", style="dim", width=12)
-    table.add_column("Number of K-mers", style="dim", width=18)
+    num_threads = cpu_count()
 
-    for length, kmer_set in barcodes.items():
-        table.add_row(str(length), str(len(kmer_set)))
+    start_time = time.time()
+    chunks = read_paired_fastq(args.fastq1, args.fastq2, num_threads)
+    end_time = time.time()
+    console.print(f"Time Taken to Read FASTQ Files: {end_time - start_time} Seconds")
 
-    console.rule("[bold red]K-mer Summary")
-    console.print(table)
-
-    # Read paired fastq files in chunks
-    console.rule("[bold red]Reading fastq files in chunks...")
-    chunk_size = 40000  # 10,000 reads x 4 lines per read
-    reads1, reads2 = read_paired_fastq(args.fastq1, args.fastq2, chunk_size)
-
-    all_reads = list(zip(reads1, reads2))
-
-    num_cores = cpu_count()
-    pool = Pool(processes=num_cores)
-
-    chunk_size = len(all_reads) // num_cores
-    reads_list = [(all_reads[i:i + chunk_size], barcodes) for i in range(0, len(all_reads), chunk_size)]
-
-    results = pool.map(process_chunk, reads_list)
+    start_time = time.time()
+    pool = Pool(num_threads)
+    results = pool.map(process_chunk, chunks)
+    end_time = time.time()
+    console.print(f"Time Taken to Process Chunks: {end_time - start_time} Seconds")
 
     final_counts = Counter()
     for res in results:
