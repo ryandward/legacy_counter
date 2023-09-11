@@ -48,6 +48,24 @@ def read_paired_fastq(fastq1_file: str, fastq2_file: str, num_threads: int):
         for i in range(0, len(paired_reads1), chunk_size)
     ]
 
+def determine_forward_direction(chunk: tuple, sample_size: int = 100) -> str:
+    """Determine which direction is forward based on the intersection of barcodes and reads."""
+    reads1, reads2, barcodes = chunk
+    barcode_length = len(next(iter(barcodes)))
+    
+    count1, count2 = 0, 0
+    for i, (rec1, rec2) in enumerate(zip(reads1, reads2)):
+        if i >= sample_size:
+            break
+
+        kmer_set1 = {rec1[j:j + barcode_length] for j in range(len(rec1) - barcode_length + 1)}
+        kmer_set2 = {rec2[j:j + barcode_length] for j in range(len(rec2) - barcode_length + 1)}
+        
+        count1 += len(kmer_set1 & barcodes)
+        count2 += len(kmer_set2 & barcodes)
+
+    return "forward" if count1 > count2 else "reverse"
+
 def process_chunk(chunk: tuple) -> Counter:
     """Process a chunk of paired-end reads to count barcode occurrences."""
     reads1, reads2, barcodes = chunk
@@ -82,7 +100,6 @@ def process_chunk(chunk: tuple) -> Counter:
 
     return counts
 
-# Command-line argument parsing and main program flow
 if __name__ == "__main__":
     parser = ArgumentParser(description='Process Barcodes.')
     parser.add_argument('fasta_file', type=str, help='Input FASTA file.')
@@ -91,31 +108,52 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     num_threads = cpu_count()
-
     console.rule("[bold red]Starting the Program")
 
-    # Time and run the main steps
     with console.status("[bold green]Reading FASTA File..."):
         start_time = time.time()
         barcodes = read_fasta(args.fasta_file)
-        console.print(f"Time Taken to Read FASTA File: {time.time() - start_time} Seconds")
+        elapsed_time = round(time.time() - start_time, 2)
+        console.print(f"Time Taken: {elapsed_time}s. Number of Barcodes: [bold]{len(barcodes)}[/bold]")
 
     with console.status("[bold green]Reading FASTQ Files..."):
         start_time = time.time()
         chunks = read_paired_fastq(args.fastq1, args.fastq2, num_threads)
-        console.print(f"Time Taken to Read FASTQ Files: {time.time() - start_time} Seconds")
+        elapsed_time = round(time.time() - start_time, 2)
+        total_reads = sum(len(chunk[0]) for chunk in chunks)
+        console.print(f"Time Taken: {elapsed_time}s. Number of Reads: [bold]{total_reads}[/bold]")
+
+    with console.status("[bold green]Determining Forward Direction..."):
+        start_time = time.time()
+        sample_chunk = chunks[0]
+        direction = determine_forward_direction(sample_chunk)
+        elapsed_time = round(time.time() - start_time, 2)
+        console.print(f"Time Taken: {elapsed_time}s. Forward Direction: [bold]{direction}[/bold]")
 
     with console.status("[bold green]Processing Chunks..."):
         start_time = time.time()
         pool = Pool(num_threads)
-        results = pool.map(process_chunk, chunks)
-        console.print(f"Time Taken to Process Chunks: {time.time() - start_time} Seconds")
+        if direction == "forward":
+            results = pool.map(process_chunk, chunks)
+        else:
+            reversed_chunks = [(reads2, reads1, barcodes) for reads1, reads2, barcodes in chunks]
+            results = pool.map(process_chunk, reversed_chunks)
+        elapsed_time = round(time.time() - start_time, 2)
+        console.print(f"Time Taken: {elapsed_time}s")
 
     final_counts = Counter()
     for res in results:
         final_counts.update(res)
 
-    console.rule("[bold red]Final Barcode Counts")
+    num_barcodes_seen = len(final_counts)
+    num_reads_with_barcode = sum(final_counts.values())
+    
+    console.rule("[bold red]Summary")
+    console.print(f"Number of Barcodes: [bold]{len(barcodes)}[/bold]")
+    console.print(f"Number of Reads: [bold]{total_reads}[/bold]")
+    console.print(f"Number of Barcodes Seen: [bold]{num_barcodes_seen}[/bold]")
+    console.print(f"Number of Reads with a Barcode: [bold]{num_reads_with_barcode}[/bold]")
 
+    console.rule("[bold red]Final Barcode Counts")
     for barcode, count in final_counts.items():
         print(f"{barcode}\t{count}")
