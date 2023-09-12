@@ -5,6 +5,7 @@ from rich.console import Console
 import argparse
 import time
 import gzip
+from datetime import timedelta
 
 def read_fasta(fasta_file):
     barcodes = set()
@@ -54,12 +55,15 @@ def read_paired_fastq(fastq1_file, fastq2_file, num_threads):
 def process_chunk(chunk, barcodes, barcode_start1, barcode_start2, barcode_length):
     reads1, reads2 = chunk
     counts = Counter()
+    unexpected_sequences = Counter()
     for rec1, rec2 in zip(reads1, reads2):
         barcode1 = rec1[barcode_start1:barcode_start1 + barcode_length]
         barcode2 = str(Seq(rec2[barcode_start2:barcode_start2 + barcode_length]).reverse_complement())
         if barcode1 in barcodes and barcode2 in barcodes:
             counts[barcode1] += 1
-    return counts
+        else:
+            unexpected_sequences[barcode1] += 1
+    return counts, unexpected_sequences
 
 def find_start_positions(reads, barcodes, barcode_length, is_read2=False):
     for read in reads:
@@ -70,49 +74,104 @@ def find_start_positions(reads, barcodes, barcode_length, is_read2=False):
             if kmer in barcodes:
                 return i
 
+
+
+
+from datetime import datetime
+from rich.table import Table
+from collections import Counter
+from multiprocessing import Pool, cpu_count
+from rich.console import Console
+
 def main(args):
     num_threads = cpu_count()
     console = Console(stderr=True, highlight=False)
-    console.rule("[bold red]Starting the Program")
+    console.rule("[bold red]Initializing Barcode Counting Operation")
+    console.print(f"Program started at [bold]{datetime.now()}[/bold]")
 
+    timing_table = Table(show_header=True, header_style="bold magenta")
+    timing_table.add_column("Step", style="dim", width=50)
+    timing_table.add_column("Time", justify="right")
+
+    stats_table = Table(show_header=True, header_style="bold blue")
+    stats_table.add_column("Statistic", style="dim", width=50)
+    stats_table.add_column("Value", justify="right")
+
+    start_global = datetime.now()
+
+    start_time = datetime.now()
     with console.status("[bold green]Reading FASTA File..."):
-        start_time = time.time()
         barcodes = read_fasta(args.fasta_file)
-        console.print(f"Time Taken to Read FASTA File: {time.time() - start_time} Seconds")
+    last_step_time = datetime.now() - start_time
+    timing_table.add_row("Reading FASTA File", f"[bold]{last_step_time}")
 
-    with console.status("[bold green]Reading FASTQ Files and Finding Barcode Starts..."):
-        start_time = time.time()
+    start_time = datetime.now()
+    with console.status(f"[bold green]Reading FASTQ Files... (Last Step Took: {last_step_time})"):
         chunks = read_paired_fastq(args.fastq1, args.fastq2, num_threads)
         sample1, sample2 = chunks[0]
+    last_step_time = datetime.now() - start_time
+    timing_table.add_row("Reading FASTQ Files", f"[bold]{last_step_time}")
+
+    start_time = datetime.now()
+    with console.status(f"[bold green]Determining Barcode Coordinates for Read 1... (Last Step Took: {last_step_time})"):
         barcode_length = len(next(iter(barcodes)))
         barcode_start1 = find_start_positions(sample1, barcodes, barcode_length)
-        barcode_start2 = find_start_positions(sample2, barcodes, barcode_length, is_read2=True)
-        console.print(f"Time Taken: {time.time() - start_time} Seconds")
+    last_step_time = datetime.now() - start_time
+    timing_table.add_row("Determining Barcode Coordinates for Read 1", f"[bold]{last_step_time}")
 
-    with console.status("[bold green]Processing Chunks..."):
-        start_time = time.time()
+    start_time = datetime.now()
+    with console.status(f"[bold green]Determining Barcode Coordinates for Read 2... (Last Step Took: {last_step_time})"):
+        barcode_start2 = find_start_positions(sample2, barcodes, barcode_length, is_read2=True)
+    last_step_time = datetime.now() - start_time
+    timing_table.add_row("Determining Barcode Coordinates for Read 2", f"[bold]{last_step_time}")
+
+    start_time = datetime.now()
+    with console.status(f"[bold green]Processing Chunks... (Last Step Took: {last_step_time})"):
         pool = Pool(num_threads)
         results = pool.starmap(process_chunk, [(chunk, barcodes, barcode_start1, barcode_start2, barcode_length) for chunk in chunks])
-        console.print(f"Time Taken to Process Chunks: {time.time() - start_time} Seconds")
+    last_step_time = datetime.now() - start_time
+    timing_table.add_row("Processing Chunks", f"[bold]{last_step_time}")
+
+    total_time_taken = datetime.now() - start_global
+    timing_table.add_row("Total Time Taken", f"[bold]{total_time_taken}")
+
+    console.print(timing_table)
 
     final_counts = Counter()
-    for res in results:
-        final_counts.update(res)
+    final_unexpected_sequences = Counter()
+    for counts, unexpected_sequences in results:
+        final_counts.update(counts)
+        final_unexpected_sequences.update(unexpected_sequences)
 
     total_reads = sum(len(chunk[0]) for chunk in chunks)
     num_barcodes_seen = len(final_counts)
     num_reads_with_barcode = sum(final_counts.values())
-    
+
+    # Additional statistics
+    most_frequent_barcode = final_counts.most_common(1)
+    least_frequent_barcode = final_counts.most_common()[:-2:-1]
+    fraction_reads_with_barcodes = num_reads_with_barcode / total_reads if total_reads > 0 else 0
+    most_frequent_unexpected_seq = final_unexpected_sequences.most_common(1)
+
+    # Add stats to the table
+    stats_table.add_row("Barcode Start Location for Read 1", f"[bold]{barcode_start1}[/bold]")
+    stats_table.add_row("Barcode Start Location for Read 2", f"[bold]{barcode_start2}[/bold]")
+    stats_table.add_row("Number of Barcodes in Reference", f"[bold]{len(barcodes)}[/bold]")
+    stats_table.add_row("Number of Unique Barcodes Seen", f"[bold]{num_barcodes_seen}[/bold]")
+    stats_table.add_row("Total Number of Reads", f"[bold]{total_reads}[/bold]")
+    stats_table.add_row("Number of Reads Containing a Barcode", f"[bold]{num_reads_with_barcode}[/bold]")
+    stats_table.add_row("Most Frequent Barcode", f"[bold]{most_frequent_barcode}[/bold]")
+    stats_table.add_row("Least Frequent Barcode", f"[bold]{least_frequent_barcode}[/bold]")
+    stats_table.add_row("Fraction of Reads with Barcodes", f"[bold]{fraction_reads_with_barcodes:.2f}[/bold]")
+    stats_table.add_row("Most Frequent Unexpected Sequence at Offset", f"[bold]{most_frequent_unexpected_seq}[/bold]")
+
+
     console.rule("[bold red]Summary")
-    console.print(f"Number of Barcodes: [bold]{len(barcodes)}[/bold]")
-    console.print(f"Number of Reads: [bold]{total_reads}[/bold]")
-    console.print(f"Number of Barcodes Seen: [bold]{num_barcodes_seen}[/bold]")
-    console.print(f"Number of Reads with a Barcode: [bold]{num_reads_with_barcode}[/bold]")
-    
+    console.print(stats_table)
+    console.print(f"Program finished at [bold]{datetime.now()}[/bold]")
+
     for barcode, count in final_counts.items():
         print(f"{barcode}\t{count}")
-
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process Barcodes.')
