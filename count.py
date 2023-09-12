@@ -114,21 +114,21 @@ if __name__ == "__main__":
         start_time = time.time()
         barcodes = read_fasta(args.fasta_file)
         elapsed_time = round(time.time() - start_time, 2)
-        console.print(f"Time Taken: {elapsed_time}s. Number of Barcodes: [bold]{len(barcodes)}[/bold]")
+        console.print(f"Time Taken to Read FASTA: {elapsed_time}s. Number of Barcodes: [bold]{len(barcodes)}[/bold]")
 
     with console.status("[bold green]Reading FASTQ Files..."):
         start_time = time.time()
         chunks = read_paired_fastq(args.fastq1, args.fastq2, num_threads)
         elapsed_time = round(time.time() - start_time, 2)
         total_reads = sum(len(chunk[0]) for chunk in chunks)
-        console.print(f"Time Taken: {elapsed_time}s. Number of Reads: [bold]{total_reads}[/bold]")
+        console.print(f"Time Taken to Read FASTQ: {elapsed_time}s. Number of Reads: [bold]{total_reads}[/bold]")
 
     with console.status("[bold green]Determining Forward Direction..."):
         start_time = time.time()
         sample_chunk = chunks[0]
         direction = determine_forward_direction(sample_chunk)
         elapsed_time = round(time.time() - start_time, 2)
-        console.print(f"Time Taken: {elapsed_time}s. Forward Direction: [bold]{direction}[/bold]")
+        console.print(f"Time Taken to Determine Direction: {elapsed_time}s. Forward Direction: [bold]{direction}[/bold]")
 
     with console.status("[bold green]Processing Chunks..."):
         start_time = time.time()
@@ -139,7 +139,7 @@ if __name__ == "__main__":
             reversed_chunks = [(reads2, reads1, barcodes) for reads1, reads2, barcodes in chunks]
             results = pool.map(process_chunk, reversed_chunks)
         elapsed_time = round(time.time() - start_time, 2)
-        console.print(f"Time Taken: {elapsed_time}s")
+        console.print(f"Time Taken to Process Chunks: {elapsed_time}s")
 
     final_counts = Counter()
     for res in results:
