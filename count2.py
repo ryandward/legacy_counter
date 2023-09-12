@@ -50,7 +50,14 @@ def read_paired_fastq(fastq1_file, fastq2_file, num_threads):
     chunk_size = len(paired_reads1) // num_threads
     return [(paired_reads1[i:i+chunk_size], paired_reads2[i:i+chunk_size]) for i in range(0, len(paired_reads1), chunk_size)]
 
-
+def determine_forward_read(sample1, sample2, barcodes):
+    count1, count2 = 0, 0
+    for seq1, seq2 in zip(sample1[:100], sample2[:100]):
+        if any(barcode in seq1 for barcode in barcodes):
+            count1 += 1
+        if any(barcode in seq2 for barcode in barcodes):
+            count2 += 1
+    return count2 > count1
 
 def process_chunk(chunk, barcodes, barcode_start1, barcode_start2, barcode_length):
     reads1, reads2 = chunk
@@ -73,9 +80,6 @@ def find_start_positions(reads, barcodes, barcode_length, is_read2=False):
                 kmer = str(Seq(kmer).reverse_complement())
             if kmer in barcodes:
                 return i
-
-
-
 
 from datetime import datetime
 from rich.table import Table
@@ -111,6 +115,17 @@ def main(args):
         sample1, sample2 = chunks[0]
     last_step_time = datetime.now() - start_time
     timing_table.add_row("Reading FASTQ Files", f"[bold]{last_step_time}")
+
+    # Determine if forward direction needs to be swapped
+    start_time = datetime.now()
+    with console.status(f"[bold green]Determining Forward Direction..."):
+        sample1, sample2 = chunks[0]
+        need_swap = determine_forward_read(sample1, sample2, barcodes)  # Make sure the function name matches
+    last_step_time = datetime.now() - start_time
+    timing_table.add_row("Determining Forward Direction", f"[bold]{last_step_time}")
+
+    if need_swap:
+        chunks = [(reads2, reads1) for reads1, reads2 in chunks]
 
     start_time = datetime.now()
     with console.status(f"[bold green]Determining Barcode Coordinates for Read 1... (Last Step Took: {last_step_time})"):
