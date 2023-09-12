@@ -6,6 +6,7 @@ import argparse
 import time
 import gzip
 from datetime import timedelta
+import os
 
 def read_fasta(fasta_file):
     barcodes = set()
@@ -167,17 +168,22 @@ def main(args):
     least_frequent_barcode = final_counts.most_common()[:-2:-1]
     fraction_reads_with_barcodes = num_reads_with_barcode / total_reads if total_reads > 0 else 0
     most_frequent_unexpected_seq = final_unexpected_sequences.most_common(1)
+    fastq1_filename = os.path.basename(args.fastq1) if not need_swap else os.path.basename(args.fastq2)
+    fastq2_filename = os.path.basename(args.fastq2) if not need_swap else os.path.basename(args.fastq1)
 
-    # Add stats to the table
-    stats_table.add_row("Barcode Start Location for Read 1", f"[bold]{barcode_start1}[/bold]")
-    stats_table.add_row("Barcode Start Location for Read 2", f"[bold]{barcode_start2}[/bold]")
+    # Add additional stats to the table
+    stats_table.add_row("Forward Read File", f"[bold]{fastq1_filename}[/bold]")
+    stats_table.add_row("Reverse Read File", f"[bold]{fastq2_filename}[/bold]")
+    stats_table.add_row("Barcodes File", f"[bold]{os.path.basename(args.fasta_file)}[/bold]")
+    stats_table.add_row("Barcode Start Location for Forward", f"[bold]{barcode_start1}[/bold]")
+    stats_table.add_row("Barcode Start Location for Reverse", f"[bold]{barcode_start2}[/bold]")
     stats_table.add_row("Number of Barcodes in Reference", f"[bold]{len(barcodes)}[/bold]")
     stats_table.add_row("Number of Unique Barcodes Seen", f"[bold]{num_barcodes_seen}[/bold]")
     stats_table.add_row("Total Number of Reads", f"[bold]{total_reads}[/bold]")
     stats_table.add_row("Number of Reads Containing a Barcode", f"[bold]{num_reads_with_barcode}[/bold]")
+    stats_table.add_row("Fraction of Reads with Barcodes", f"[bold]{fraction_reads_with_barcodes:.2f}[/bold]")
     stats_table.add_row("Most Frequent Barcode", f"[bold]{most_frequent_barcode}[/bold]")
     stats_table.add_row("Least Frequent Barcode", f"[bold]{least_frequent_barcode}[/bold]")
-    stats_table.add_row("Fraction of Reads with Barcodes", f"[bold]{fraction_reads_with_barcodes:.2f}[/bold]")
     stats_table.add_row("Most Frequent Unexpected Sequence at Offset", f"[bold]{most_frequent_unexpected_seq}[/bold]")
 
 
