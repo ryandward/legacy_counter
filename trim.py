@@ -3,6 +3,8 @@ import gzip
 from Bio import SeqIO
 from Bio.Seq import Seq
 from collections import Counter
+import re
+from Bio.SeqRecord import SeqRecord
 
 def open_file(file_path):
     return gzip.open(file_path, 'rt') if file_path.endswith('.gz') else open(file_path, 'r')
@@ -48,25 +50,18 @@ def find_flanking_sequences(fastq_file, barcodes, is_reverse, sample_size=20):
     return common_upstream, common_downstream
 
 def trim_and_output(fastq_file, barcodes, upstream, downstream, is_reverse):
+    barcode_regex = "|".join(re.escape(barcode) for barcode in barcodes)
+    pattern = f"{re.escape(upstream)}({barcode_regex}){re.escape(downstream)}"
+    regex = re.compile(pattern)
     for record in SeqIO.parse(fastq_file, "fastq"):
         sequence = str(record.seq) if is_reverse == "forward" else str(record.seq.reverse_complement())
-        found = False
-        for barcode in barcodes:
-            full_pattern = upstream + barcode + downstream
-            start_idx = sequence.find(full_pattern)
-            if start_idx == -1:
-                continue
-            end_idx = start_idx + len(full_pattern)
-            trimmed_start = start_idx + len(upstream)
-            trimmed_end = end_idx - len(downstream)
-            trimmed_record = record[trimmed_start:trimmed_end]
-            trimmed_record.id = record.id
-            trimmed_record.description = ""
+        match = regex.search(sequence)
+        if match:
+            trimmed_sequence = Seq(match.group(1))
+            trimmed_quality = record.letter_annotations["phred_quality"][match.start(1):match.end(1)]
+            trimmed_record = SeqRecord(trimmed_sequence, id=record.id, description="", letter_annotations={"phred_quality": trimmed_quality})
             SeqIO.write(trimmed_record, sys.stdout, "fastq")
-            found = True
-            break
-
-        if not found:
+        else:
             print(f"@{record.id}")
             print()
             print("+")
