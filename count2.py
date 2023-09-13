@@ -98,6 +98,16 @@ def find_start_positions(reads, barcodes, barcode_length, is_read2=False):
                 offset_counts[i] += 1
     return offset_counts.most_common(1)[0][0]
 
+def timed_action(console, table, action, description, start_global=None):
+    start_time = datetime.now()
+    time_since_global = datetime.now() - start_global if start_global else None
+    desc = f"{description} (Began After: {time_since_global})" if time_since_global else description
+    with console.status(f"[bold green]{desc}..."):
+        action_result = action()
+    last_step_time = datetime.now() - start_time
+    table.add_row(description, f"[bold]{last_step_time}")
+    return action_result
+
 from datetime import datetime
 from rich.table import Table
 from collections import Counter
@@ -114,57 +124,25 @@ def main(args):
     timing_table.add_column("Step", style="dim", width=50)
     timing_table.add_column("Time", justify="right")
 
-    stats_table = Table(show_header=True, header_style="bold blue")
-    stats_table.add_column("Statistic", style="dim", width=50)
-    stats_table.add_column("Value", justify="right")
-
     start_global = datetime.now()
 
-    start_time = datetime.now()
-    with console.status("[bold green]Reading FASTA File..."):
-        barcodes = read_fasta(args.fasta_file)
-        barcode_length = len(next(iter(barcodes)))  # Define this before if need_swap
-    last_step_time = datetime.now() - start_time
-    timing_table.add_row("Reading FASTA File", f"[bold]{last_step_time}")
+    barcodes = timed_action(console, timing_table, lambda: read_fasta(args.fasta_file), "Reading FASTA File", start_global)
+    barcode_length = len(next(iter(barcodes)))
 
-    start_time = datetime.now()
-    with console.status(f"[bold green]Reading FASTQ Files... (Began After: {datetime.now() - start_global})"):
-        chunks = read_paired_fastq(args.fastq1, args.fastq2, num_threads)
-        sample1, sample2 = chunks[0]
-    last_step_time = datetime.now() - start_time
-    timing_table.add_row("Reading FASTQ Files", f"[bold]{last_step_time}")
+    chunks = timed_action(console, timing_table, lambda: read_paired_fastq(args.fastq1, args.fastq2, num_threads), "Reading FASTQ Files", start_global)
+    sample1, sample2 = chunks[0]
 
-    # Determine if forward direction needs to be swapped
-    start_time = datetime.now()
-    with console.status(f"[bold green]Determining Forward Direction... (Began After: {datetime.now() - start_global})"):
-        sample1, sample2 = chunks[0]
-        need_swap = determine_forward_read(sample1, sample2, barcodes)  # Make sure the function name matches
-    last_step_time = datetime.now() - start_time
-    timing_table.add_row("Determining Forward Direction", f"[bold]{last_step_time}")
+    need_swap = timed_action(console, timing_table, lambda: determine_forward_read(sample1, sample2, barcodes), "Determining Forward Direction", start_global)
 
     if need_swap:
         chunks = [(reads2, reads1) for reads1, reads2 in chunks]
         sample1, sample2 = chunks[0]
 
-    start_time = datetime.now()
-    with console.status(f"[bold green]Determining Barcode Coordinates for Read 1... (Began After: {datetime.now() - start_global})"):
-        barcode_start1 = find_start_positions(sample1, barcodes, barcode_length)
-    last_step_time = datetime.now() - start_time
-    timing_table.add_row("Determining Barcode Coordinates for Read 1", f"[bold]{last_step_time}")
+    barcode_start1 = timed_action(console, timing_table, lambda: find_start_positions(sample1, barcodes, barcode_length), "Determining Barcode Coordinates for Read 1", start_global)
+    
+    barcode_start2 = timed_action(console, timing_table, lambda: find_start_positions(sample2, barcodes, barcode_length, is_read2=True), "Determining Barcode Coordinates for Read 2", start_global)
 
-    start_time = datetime.now()
-    with console.status(f"[bold green]Determining Barcode Coordinates for Read 2... (Began After: {datetime.now() - start_global})"):
-        barcode_start2 = find_start_positions(sample2, barcodes, barcode_length, is_read2=True)
-    last_step_time = datetime.now() - start_time
-    timing_table.add_row("Determining Barcode Coordinates for Read 2", f"[bold]{last_step_time}")
-
-
-    start_time = datetime.now()
-    with console.status(f"[bold green]Processing Chunks... (Began After: {datetime.now() - start_global})"):
-        pool = Pool(num_threads)
-        results = pool.starmap(process_chunk, [(chunk, barcodes, barcode_start1, barcode_start2, barcode_length) for chunk in chunks])
-    last_step_time = datetime.now() - start_time
-    timing_table.add_row("Processing Chunks", f"[bold]{last_step_time}")
+    results = timed_action(console, timing_table, lambda: Pool(num_threads).starmap(process_chunk, [(chunk, barcodes, barcode_start1, barcode_start2, barcode_length) for chunk in chunks]), "Processing Chunks", start_global)
 
     total_time_taken = datetime.now() - start_global
     timing_table.add_row("Total Time Taken", f"[bold]{total_time_taken}")
