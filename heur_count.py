@@ -2,6 +2,7 @@ import argparse
 import subprocess
 import gzip
 import os
+import sys
 
 from datetime import datetime
 from rich.table import Table
@@ -85,7 +86,7 @@ def find_ends(reads, start, length):
 
 from collections import defaultdict
 
-def process_chunk(chunk, barcodes, barcodes_rc, barcode_start1, barcode_start2, barcode_length):
+def process_chunk(chunk, barcodes, barcode_start1, barcode_start2, barcode_length):
     reads1, reads2 = chunk
     counts = defaultdict(int)
     unexpected_sequences = defaultdict(int)
@@ -94,10 +95,10 @@ def process_chunk(chunk, barcodes, barcodes_rc, barcode_start1, barcode_start2, 
         candidate1 = rec1[barcode_start1:barcode_start1 + barcode_length]
         candidate2 = rec2[barcode_start2:barcode_start2 + barcode_length]
 
-        if candidate1 in barcodes and candidate2 in barcodes_rc:
+        if candidate1 in barcodes and candidate2 and candidate2[::-1].translate(str.maketrans("ATCGN", "TAGCN")) == candidate1:
             counts[candidate1[4:-4]] += 1
         else:
-            if candidate1 not in barcodes and candidate2.translate(str.maketrans("ATCGN", "TAGCN")) == candidate1:
+            if candidate1 not in barcodes and candidate2[::-1].translate(str.maketrans("ATCGN", "TAGCN")) == candidate1:
                 unexpected_sequences[candidate1[4:-4]] += 1
     return counts, unexpected_sequences
 
@@ -135,8 +136,6 @@ def main(args):
     start_global = datetime.now()
 
     barcodes = timed_action(console, timing_table, lambda: read_fasta(args.fasta_file), "Reading FASTA File", start_global)
-    barcodes_rc = {barcode[::-1].translate(str.maketrans("ATCGN", "TAGCN")) for barcode in barcodes}
-
     barcode_length = len(next(iter(barcodes)))
 
     chunks = timed_action(console, timing_table, lambda: read_paired_fastq(args.fastq1, args.fastq2, num_threads), "Reading FASTQ Files", start_global)
@@ -160,11 +159,10 @@ def main(args):
 
     # Update barcodes
     barcodes = {left1 + barcode + right1 for barcode in barcodes}
-    barcodes_rc = {left2 + barcode + right2 for barcode in barcodes_rc}
     barcode_length = len(next(iter(barcodes)))
 
     with Pool(num_threads) as pool:
-        results = timed_action(console, timing_table, lambda: pool.starmap(process_chunk, [(chunk, barcodes, barcodes_rc, barcode_start1, barcode_start2, barcode_length) for chunk in chunks]), "Processing Chunks", start_global)
+        results = timed_action(console, timing_table, lambda: pool.starmap(process_chunk, [(chunk, barcodes, barcode_start1, barcode_start2, barcode_length) for chunk in chunks]), "Processing Chunks", start_global)
 
     final_counts = Counter()
     final_unexpected_sequences = Counter()
