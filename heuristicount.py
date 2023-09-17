@@ -99,7 +99,7 @@ def process_chunk(chunk, barcodes, barcode_start1, barcode_start2, barcode_lengt
             counts[candidate1[4:-4]] += 1
         else:
             if candidate1 not in barcodes and candidate2[::-1].translate(str.maketrans("ATCGN", "TAGCN")) == candidate1:
-                unexpected_sequences[candidate1[4:-4]] += 1
+                unexpected_sequences[candidate1] += 1
     return counts, unexpected_sequences
 
 def find_start_positions(reads, barcodes, barcode_length, is_read2=False):
@@ -171,6 +171,14 @@ def main(args):
         final_counts.update(counts)
         final_unexpected_sequences.update(unexpected_sequences)
 
+    # This checks the final_unexpected_sequences and checks if they each begin with left1 and end with right1, then adds them to a new Counter called new_barcodes
+    new_barcodes = Counter()
+    for seq, count in final_unexpected_sequences.items():
+        if seq.startswith(left1) and seq.endswith(right1):
+            new_barcodes[seq[4:-4]+"*"] = count
+
+    final_counts = final_counts + new_barcodes
+
     total_reads = sum(len(chunk[0]) for chunk in chunks)
     num_barcodes_seen = len(final_counts)
     num_reads_with_barcode = sum(final_counts.values())
@@ -210,7 +218,7 @@ def main(args):
     sequence_info_table.add_column("Sequence Information", style="dim", width=50)
     sequence_info_table.add_column("Value", justify="right")
     sequence_info_table.add_row("Most Frequent Barcode", f"[bold]{most_frequent_barcode}[/bold]")
-    sequence_info_table.add_row("Most Frequent Unexpected Sequence", f"[bold]{most_frequent_unexpected_seq}[/bold]")
+    sequence_info_table.add_row("Most Frequent Unexpected Sequence", f"[bold]{new_barcodes.most_common(1)}[/bold]")
 
     # Finish Timing
     total_time_taken = datetime.now() - start_global
