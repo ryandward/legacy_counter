@@ -22,7 +22,9 @@ def read_fasta(fasta_file):
                 barcodes.add(line.strip())
     return barcodes
 
-def fastq_reader(proc_stdout):
+import subprocess
+
+def fastq_reader(proc_stdout, should_decode):
     while True:
         next(proc_stdout, None)
         seq_line = next(proc_stdout, None)
@@ -30,20 +32,27 @@ def fastq_reader(proc_stdout):
         next(proc_stdout, None)
         if seq_line is None:
             break
-        yield seq_line.decode().strip()
+        yield seq_line.decode().strip() if should_decode else seq_line.strip()
 
 def read_paired_fastq(fastq1_file, fastq2_file, num_threads):
     paired_reads1, paired_reads2 = [], []
     proc1 = proc2 = None
+
     if fastq1_file.endswith('.gz'):
-        proc1 = subprocess.Popen(["pigz", "-dc", fastq1_file], stdout=subprocess.PIPE)
-        proc2 = subprocess.Popen(["pigz", "-dc", fastq2_file], stdout=subprocess.PIPE)
-        f1, f2 = proc1.stdout, proc2.stdout
+        try:
+            proc1 = subprocess.Popen(["pigz", "-dc", fastq1_file], stdout=subprocess.PIPE)
+            proc2 = subprocess.Popen(["pigz", "-dc", fastq2_file], stdout=subprocess.PIPE)
+            f1, f2 = proc1.stdout, proc2.stdout
+        except FileNotFoundError:
+            f1 = gzip.open(fastq1_file, 'rt')
+            f2 = gzip.open(fastq2_file, 'rt')
     else:
         f1 = open(fastq1_file, 'rt')
         f2 = open(fastq2_file, 'rt')
 
-    for seq1, seq2 in zip(fastq_reader(f1), fastq_reader(f2)):
+    should_decode = bool(proc1 and proc2)
+
+    for seq1, seq2 in zip(fastq_reader(f1, should_decode), fastq_reader(f2, should_decode)):
         paired_reads1.append(seq1)
         paired_reads2.append(seq2)
 
@@ -53,6 +62,9 @@ def read_paired_fastq(fastq1_file, fastq2_file, num_threads):
 
     chunk_size = len(paired_reads1) // num_threads
     return [(paired_reads1[i:i+chunk_size], paired_reads2[i:i+chunk_size]) for i in range(0, len(paired_reads1), chunk_size)]
+
+import gzip  # Add this import for gzip support
+
 
 def determine_forward_read(sample1, sample2, barcodes):
     count1, count2 = 0, 0
