@@ -294,7 +294,7 @@ def main(args):
 
     final_counts = final_counts + new_barcodes
 
-    total_reads = sum(len(chunk[0]) for chunk in chunks if chunk[0] is not None)
+    total_reads = sum(len(chunk[0]) if chunk[0] is not None else len(chunk[1]) for chunk in chunks)
     num_barcodes_seen = len(final_counts)
     num_reads_with_barcode = sum(final_counts.values())
 
@@ -307,8 +307,8 @@ def main(args):
         fastq1_filename = os.path.basename(args.fastq1) if not need_swap else os.path.basename(args.fastq2)
         fastq2_filename = os.path.basename(args.fastq2) if not need_swap else os.path.basename(args.fastq1)
     else:
-        fastq1_filename = os.path.basename(args.fastq1)
-        fastq2_filename = None
+        fastq1_filename = os.path.basename(args.fastq1) if not need_swap else None
+        fastq2_filename = None if not need_swap else os.path.basename(args.fastq1)
 
     # Tables
 
