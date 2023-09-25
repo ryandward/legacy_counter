@@ -172,7 +172,7 @@ def find_start_positions(reads, barcodes, barcode_length, is_read2=False):
 
 def main(args):
     num_threads = cpu_count()
-    console = Console(stderr=True, highlight=False)
+    console = Console(stderr=True, highlight=True)
     console.log("[bold red]Initializing heuristic barcode counting")
 
     # Reading FASTA File
@@ -307,18 +307,18 @@ def main(args):
 
     # Create a single table with enhanced styles
     combined_table = Table(
-        title="Summary",
-        box=rich.table.box.MINIMAL_HEAVY_HEAD,
-        caption="Generated at [u]{}[/u]".format(datetime.now()),
-        title_style="bold bright_magenta",
-        caption_style="bold green",
+        # title="Summary",
+        box=rich.table.box.SIMPLE_HEAVY,
+        caption="Finished at [u]{}[/u]".format(datetime.now()),
+        title_style="bold bright_white",
+        caption_style="bold white",
         header_style="bold bright_white",
         border_style="bold bright_white",
-        show_header=False
+        show_header=True
     )
     # Define columns with justifications
-    combined_table.add_column("Category", justify="right", style="white", min_width=30)
-    combined_table.add_column("Values", justify="right", style="bold bright_white", min_width=20)
+    combined_table.add_column("Summary", justify="right", style="white", min_width=30)
+    combined_table.add_column("", justify="right", style="bold bright_white", min_width=20)
 
     # Input & Configuration Sub-heading
     combined_table.add_section()
@@ -349,11 +349,10 @@ def main(args):
     combined_table.add_row("Unique Documented Barcodes", f"[bold]{len(final_counts)}[/bold]")
     combined_table.add_row("Unique Undocumented Barcodes", f"[bold]{len(new_barcodes)}[/bold]")
     combined_table.add_row("Total Reads", f"[bold]{total_reads}[/bold]")
-    combined_table.add_row("Reads Documented Barcode", f"[bold]{sum(final_counts.values())}[/bold]")
-    combined_table.add_row("Reads Undocumented Barcode", f"[bold]{sum(new_barcodes.values())}[/bold]")
+    combined_table.add_row("Documented Barcode Reads", f"[bold]{sum(final_counts.values())}[/bold]")
+    combined_table.add_row("Undocumented Barcode Reads", f"[bold]{sum(new_barcodes.values())}[/bold]")
     combined_table.add_row("Fraction Documented", f"[bold]{(sum(final_counts.values()) / total_reads if total_reads != 0 else 0):.4f}[/bold]")
     combined_table.add_row("Fraction Undocumented", f"[bold]{(sum(new_barcodes.values()) / total_reads if total_reads != 0 else 0):.4f}[/bold]", end_section=True)
-
 
     # Sequence Information Sub-heading  
     combined_table.add_section()
@@ -378,11 +377,10 @@ def main(args):
     console.log(combined_table)
 
     for barcode, count in final_counts.items():
-        print(f"{barcode}\t{count}")
+        print("\t".join([barcode, str(count)]))
 
     for barcode, count in new_barcodes.items():
-        print(f"{barcode}\t{count}")
-
+        print("\t".join([barcode, str(count)]))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process Barcodes.')
