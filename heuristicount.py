@@ -317,8 +317,8 @@ def main(args):
         show_header=True
     )
     # Define columns with justifications
-    combined_table.add_column("Summary", justify="right", style="white", min_width=30)
-    combined_table.add_column("", justify="right", style="bold bright_white", min_width=20)
+    combined_table.add_column(os.path.basename(sys.argv[0]), justify="right", style="white", min_width=30)
+    combined_table.add_column("Summary", justify="right", style="bold bright_white", min_width=20)
 
     # Input & Configuration Sub-heading
     combined_table.add_section()
