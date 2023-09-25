@@ -3,9 +3,11 @@ import subprocess
 import gzip
 import os
 import sys
-from datetime import datetime
+import rich
+import hashlib
 from rich.table import Table
 from rich.console import Console
+from datetime import datetime
 from multiprocessing import Pool, cpu_count
 from collections import Counter, defaultdict
 from Bio.Seq import Seq
@@ -168,34 +170,21 @@ def find_start_positions(reads, barcodes, barcode_length, is_read2=False):
                 offset_counts[i] += 1
     return offset_counts.most_common(1)[0][0] if offset_counts else None
 
-def timed_action(console, table, action, description, start_global=None):
-    start_time = datetime.now()
-    time_since_global = datetime.now() - start_global if start_global else None
-    desc = f"{description} (Began After: {time_since_global})" if time_since_global else description
-    with console.status(f"[bold green]{desc}..."):
-        action_result = action()
-    last_step_time = datetime.now() - start_time
-    table.add_row(description, f"[bold]{last_step_time}")
-    return action_result
-
 def main(args):
     num_threads = cpu_count()
     console = Console(stderr=True, highlight=False)
-    console.rule("[bold red]Initializing Barcode Counting Operation")
-    console.print(f"Program started at [bold]{datetime.now()}[/bold]")
+    console.log("[bold red]Initializing heuristic barcode counting")
 
-    timing_table = Table(show_header=True, header_style="bold magenta")
-    timing_table.add_column("Step", style="dim", width=50)
-    timing_table.add_column("Time", justify="right")
-
-    start_global = datetime.now()
-
-    barcodes = timed_action(console, timing_table, lambda: read_fasta(args.fasta_file), "Reading FASTA File", start_global)
+    # Reading FASTA File
+    console.log("Reading barcodes from FASTA")
+    barcodes = read_fasta(args.fasta_file)
     barcode_length = len(next(iter(barcodes)))
 
     is_paired_end = bool(args.fastq2)
     
-    chunks = timed_action(console, timing_table, lambda: read_fastq(args.fastq1, args.fastq2 if is_paired_end else None, num_threads), "Reading FASTQ Files", start_global)
+    # Reading FASTQ Files
+    console.log("Reading experimental results from FASTQ")
+    chunks = read_fastq(args.fastq1, args.fastq2 if is_paired_end else None, num_threads)
     sample1, sample2 = chunks[0]
 
     # Initialize
@@ -203,10 +192,11 @@ def main(args):
 
     # Determine if a swap is needed
     if is_paired_end:
-        need_swap = timed_action(console, timing_table, lambda: determine_forward_read(sample1, sample2, barcodes), "Finding Forward Direction", start_global)
+        console.log("Finding orientation of paired-end reads")
+        need_swap = determine_forward_read(sample1, sample2, barcodes)
     else:
-        # For single-end reads, check if it's in reverse
-        need_swap = timed_action(console, timing_table, lambda: determine_forward_read(sample1, None, barcodes), "Checking if Single-End Read is Reverse", start_global)
+        console.log("Checking if Single-End Read is Reverse")
+        need_swap = determine_forward_read(sample1, None, barcodes)
 
     # Apply the swap logic
     if need_swap:
@@ -225,63 +215,66 @@ def main(args):
 
     # Skip finding barcode starts for single-end that needed a swap
     if sample1 is not None:
-        barcode_start1 = timed_action(console, timing_table, lambda: find_start_positions(sample1, barcodes, barcode_length), "Finding Forward Coordinates", start_global)
+        console.log("Finding forward coordinates")
+        barcode_start1 = find_start_positions(sample1, barcodes, barcode_length)
         if barcode_start1 is None:
-            console.print("No barcodes found in sample1. Exiting.")
+            console.log("No barcodes found in sample1. Exiting.")
             sys.exit(1)
 
     # For paired-end or single-end that needed a swap
     if sample2:
-        barcode_start2 = timed_action(console, timing_table, lambda: find_start_positions(sample2, barcodes, barcode_length, is_read2=True), "Finding Reverse Coordinates", start_global)
+        console.log("Finding reverse coordinates")
+        barcode_start2 = find_start_positions(sample2, barcodes, barcode_length, is_read2=True)
         if barcode_start2 is None:
-            console.print("No barcodes found in sample2. Exiting.")
+            console.log("No barcodes found in sample2. Exiting.")
             sys.exit(1)
     else:
         barcode_start2 = None
+
     
     # Find flanking sequences
     if sample1 is not None:
-        left1, right1 = timed_action(console, timing_table, lambda: find_ends(sample1, barcode_start1, barcode_length), "Finding Forward Junctions", start_global)
-        # Adjust coordinates
+        console.log("Finding forward junctions")
+        left1, right1 = find_ends(sample1, barcode_start1, barcode_length)
         barcode_start1 -= len(left1)
     else:
         left1, right1 = None, None
 
     if sample2:
-        left2, right2 = timed_action(console, timing_table, lambda: find_ends(sample2, barcode_start2, barcode_length), "Finding Reverse Junctions", start_global)
-        # Adjust coordinates for paired-end or single-end that needed a swap
+        console.log("Finding reverse junctions")
+        left2, right2 = find_ends(sample2, barcode_start2, barcode_length)
         barcode_start2 -= len(left2)
     else:
         left2, right2 = None, None
 
     # Update barcodes
+    console.log("Applying junctions to barcodes")
     if left1 and right1:
         barcodes = {left1 + barcode + right1 for barcode in barcodes}
     elif left2 and right2:
         barcodes = {left2 + barcode[::-1].translate(str.maketrans("ATCGN", "TAGCN")) + right2 for barcode in barcodes}
-        
     barcode_length = len(next(iter(barcodes)))
 
-
+    # Processing Chunks
+    console.log("Counting barcodes in correct location, orientation, and junctions")
     with Pool(num_threads) as pool:
-        results = timed_action(console, timing_table, lambda: pool.starmap(process_chunk, [(chunk, barcodes, barcode_start1, barcode_start2, barcode_length) for chunk in chunks]), "Processing Chunks", start_global)
+        results = pool.starmap(process_chunk, [(chunk, barcodes, barcode_start1, barcode_start2, barcode_length) for chunk in chunks])
 
+    # Collating Results
+    console.log("Preparing results")
     final_counts = Counter()
     final_unexpected_sequences = Counter()
-
     for counts, unexpected_sequences in results:
         final_counts.update(counts)
         final_unexpected_sequences.update(unexpected_sequences)
 
-    # This checks the final_unexpected_sequences and checks if they each begin with left1 and end with right1, then adds them to a new Counter called new_barcodes
+    # Filtering and Creating New Barcodes
+    console.log("Heuristic filtering and identifying new barcodes")
     new_barcodes = Counter()
-
-    # Determine the appropriate 'left' and 'right' to use based on available data
     left, right = (left1, right1) if left1 is not None else (left2, right2)
-
-    # Reverse complement if only read2 is available
     if left1 is None and left2 is not None:
         left, right = right[::-1].translate(str.maketrans("ATCGN", "TAGCN")), left[::-1].translate(str.maketrans("ATCGN", "TAGCN"))
+
 
     # Initialize new_barcodes
     new_barcodes = Counter()
@@ -292,7 +285,7 @@ def main(args):
                 barcode = seq[4:-4] + "*"                 
                 new_barcodes[barcode] = count
 
-    final_counts = final_counts + new_barcodes
+    # final_counts = final_counts + new_barcodes
 
     total_reads = sum(len(chunk[0]) if chunk[0] is not None else len(chunk[1]) for chunk in chunks)
     num_barcodes_seen = len(final_counts)
@@ -312,47 +305,84 @@ def main(args):
 
     # Tables
 
-    # Table for input and configuration
-    input_config_table = Table(show_header=True, header_style="bold blue")
-    input_config_table.add_column("Input & Configuration", style="dim", width=50)
-    input_config_table.add_column("Value", justify="right")
-    input_config_table.add_row("Forward Read File", f"[bold]{fastq1_filename}[/bold]")
-    input_config_table.add_row("Reverse Read File", f"[bold]{fastq2_filename}[/bold]")
-    input_config_table.add_row("Barcodes File", f"[bold]{os.path.basename(args.fasta_file)}[/bold]")
-    input_config_table.add_row("Barcode Start Location for Forward", f"[bold]{barcode_start1}[/bold]")
-    input_config_table.add_row("Barcode Start Location for Reverse", f"[bold]{barcode_start2}[/bold]")
+    # Create a single table with enhanced styles
+    combined_table = Table(
+        title="Summary",
+        box=rich.table.box.MINIMAL_HEAVY_HEAD,
+        caption="Generated at [u]{}[/u]".format(datetime.now()),
+        title_style="bold bright_magenta",
+        caption_style="bold green",
+        header_style="bold bright_white",
+        border_style="bold bright_white",
+        show_header=False
+    )
+    # Define columns with justifications
+    combined_table.add_column("Category", justify="right", style="white", min_width=30)
+    combined_table.add_column("Values", justify="right", style="bold bright_white", min_width=20)
 
-    # Table for numeric statistics
-    numeric_stats_table = Table(show_header=True, header_style="bold green")
-    numeric_stats_table.add_column("Numeric Statistic", style="dim", width=50)
-    numeric_stats_table.add_column("Value", justify="right")
-    numeric_stats_table.add_row("Number of Barcodes in Reference", f"[bold]{len(barcodes)}[/bold]")
-    numeric_stats_table.add_row("Number of Unique Barcodes Seen", f"[bold]{num_barcodes_seen}[/bold]")
-    numeric_stats_table.add_row("Total Number of Reads", f"[bold]{total_reads}[/bold]")
-    numeric_stats_table.add_row("Number of Reads Containing a Barcode", f"[bold]{num_reads_with_barcode}[/bold]")
-    numeric_stats_table.add_row("Fraction of Reads with Barcodes", f"[bold]{fraction_reads_with_barcodes:.2f}[/bold]")
+    # Input & Configuration Sub-heading
+    combined_table.add_section()
+    combined_table.add_row("[bold bright_blue]Input & Config[/bold bright_blue]", "")
 
-    # Table for sequence information
-    sequence_info_table = Table(show_header=True, header_style="bold yellow")
-    sequence_info_table.add_column("Sequence Information", style="dim", width=50)
-    sequence_info_table.add_column("Value", justify="right")
-    sequence_info_table.add_row("Most Frequent Barcode", f"[bold]{most_frequent_barcode}[/bold]")
-    sequence_info_table.add_row("Most Frequent Unexpected Sequence", f"[bold]{new_barcodes.most_common(1)}[/bold]")
+    # Rows for Input & Configuration
+    if args.fasta_file:
+        combined_table.add_row("Barcodes", f"[bold]{os.path.basename(args.fasta_file)}[/bold]")
+    if fastq1_filename:
+        combined_table.add_row("Fwd Reads", f"[bold]{fastq1_filename}[/bold]")
+    if fastq2_filename:
+        combined_table.add_row("Rev Reads", f"[bold]{fastq2_filename}[/bold]")
+    if barcode_start1:
+        combined_table.add_row("Fwd Coord", f"[bold]{barcode_start1 + 4}[/bold]")
+    if barcode_start2:
+        combined_table.add_row("Rev Coord", f"[bold]{barcode_start2 + 4}[/bold]")
+    if left1 and right1:
+        combined_table.add_row("Fwd Junction", f"[bold]{left1}...{right1}[/bold]")
+    if left2 and right2:
+        combined_table.add_row("Rev Junction", f"[bold]{left2}...{right2}[/bold]")
 
-    # Finish Timing
-    total_time_taken = datetime.now() - start_global
-    timing_table.add_row("Total Time Taken", f"[bold]{total_time_taken}")
+    # Numeric Statistics Sub-heading
+    combined_table.add_section()
+    combined_table.add_row("[bold bright_green]Barcode Mapping Stats[/bold bright_green]", "")
 
-    # Print Tables
-    console.print(input_config_table)
-    console.print(timing_table)
-    console.print(numeric_stats_table)
-    console.print(sequence_info_table)
+    # Rows for Numeric Statistics
+    combined_table.add_row("Barcodes in Ref", f"[bold]{len(barcodes)}[/bold]")
+    combined_table.add_row("Unique Documented Barcodes", f"[bold]{len(final_counts)}[/bold]")
+    combined_table.add_row("Unique Undocumented Barcodes", f"[bold]{len(new_barcodes)}[/bold]")
+    combined_table.add_row("Total Reads", f"[bold]{total_reads}[/bold]")
+    combined_table.add_row("Reads Documented Barcode", f"[bold]{sum(final_counts.values())}[/bold]")
+    combined_table.add_row("Reads Undocumented Barcode", f"[bold]{sum(new_barcodes.values())}[/bold]")
+    combined_table.add_row("Fraction Documented", f"[bold]{(sum(final_counts.values()) / total_reads if total_reads != 0 else 0):.4f}[/bold]")
+    combined_table.add_row("Fraction Undocumented", f"[bold]{(sum(new_barcodes.values()) / total_reads if total_reads != 0 else 0):.4f}[/bold]", end_section=True)
 
-    console.print(f"Program finished at [bold]{datetime.now()}[/bold]")
+
+    # Sequence Information Sub-heading  
+    combined_table.add_section()
+
+    # Add final_counts to the main table
+    combined_table.add_section()
+    top_final_counts = min(10, len(final_counts))
+    combined_table.add_row(f"[bold bright_yellow]Top {top_final_counts} Documented Barcodes[/bold bright_yellow]", "")
+    for idx, (barcode, count) in enumerate(final_counts.most_common(top_final_counts)):
+        end_section = idx == (top_final_counts - 1)
+        combined_table.add_row(barcode, str(count), end_section=end_section)
+
+    # Add new_barcodes to the main table
+    combined_table.add_section()
+    top_new_barcodes = min(10, len(new_barcodes))
+    combined_table.add_row(f"[bold bright_red]Top {top_new_barcodes} Undocumented Barcodes[/bold bright_red]", "")
+    for idx, (barcode, count) in enumerate(new_barcodes.most_common(top_new_barcodes)):
+        end_section = idx == (top_new_barcodes - 1)
+        combined_table.add_row(barcode, str(count), end_section=end_section)
+
+    # Print the combined table
+    console.log(combined_table)
 
     for barcode, count in final_counts.items():
         print(f"{barcode}\t{count}")
+
+    for barcode, count in new_barcodes.items():
+        print(f"{barcode}\t{count}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process Barcodes.')
@@ -361,3 +391,4 @@ if __name__ == "__main__":
     parser.add_argument('fastq2', type=str, nargs='?', default=None, help='Second FASTQ file (optional).')
     args = parser.parse_args()
     main(args)
+
